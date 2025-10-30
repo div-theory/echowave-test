@@ -5,7 +5,7 @@ import { SoundWave } from '../components/SoundWave';
 import { SummaryCard } from '../components/SummaryCard';
 import { RoomCodeDisplay } from '../components/RoomCodeDisplay';
 import { UsersIcon } from '../components/icons/UsersIcon';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'https://cdn.socket.io/4.7.5/socket.io.esm.min.js';
 
 interface EchoWavePageProps {
   setAvgVolume: (volume: number) => void;
@@ -40,7 +40,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameId = useRef<number>(0);
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<any | null>(null);
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
   const isFriendsMode = !!roomCode;
