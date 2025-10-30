@@ -12,7 +12,7 @@ interface EchoWavePageProps {
   setAvgVolume: (volume: number) => void;
 }
 
-const SIGNALING_SERVER_URL = 'https://webrtc-signal-server.glitch.me';
+const SIGNALING_SERVER_URL = 'https://arcane-ridge-34237.herokuapp.com/';
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const fakeSummary: Summary = {
@@ -121,7 +121,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   };
 
   const startSignaling = () => {
-    socketRef.current = io(SIGNALING_SERVER_URL, { transports: ['websocket'] });
+    socketRef.current = io(SIGNALING_SERVER_URL);
 
     const handleTrackEvent = (event: RTCTrackEvent, peerSocketId: string) => {
         console.log(`Received remote track from ${peerSocketId}`);
