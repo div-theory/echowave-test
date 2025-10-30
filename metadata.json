@@ -1,0 +1,7 @@
+{
+  "name": "EchoWave",
+  "description": "Voice chats that turn sound into art. Get real-time transcriptions and AI-powered summaries of your conversations.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
