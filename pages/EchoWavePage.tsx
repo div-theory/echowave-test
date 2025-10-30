@@ -12,8 +12,14 @@ interface EchoWavePageProps {
   setAvgVolume: (volume: number) => void;
 }
 
-const SIGNALING_SERVER_URL = 'https://arcane-ridge-34237.herokuapp.com/';
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+const SIGNALING_SERVER_URL = 'https://webrtc-signal-server.glitch.me/';
+const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+];
 
 const fakeSummary: Summary = {
     title: "A Spirited Conversation",
@@ -152,12 +158,12 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
     socketRef.current.on('room_state', async (users: any) => {
         console.log('Room state updated:', users);
         const myId = socketRef.current!.id;
-        const otherUsers = users.filter(id => id !== myId);
+        const otherUsers = users.filter((id: string) => id !== myId);
         setPeerCount(otherUsers.length);
       
         const currentPeers = Array.from(peersRef.current.keys());
-        const newUsers = otherUsers.filter(id => !currentPeers.includes(id));
-        const leftUsers = currentPeers.filter(id => !otherUsers.includes(id));
+        const newUsers = otherUsers.filter((id: string) => !currentPeers.includes(id));
+        const leftUsers = currentPeers.filter((id: string) => !otherUsers.includes(id));
         
         for (const userId of newUsers) {
             const pc = createPeerConnection(userId);
