@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ConversationState, Summary } from '../types';
@@ -6,10 +5,14 @@ import { SoundWave } from '../components/SoundWave';
 import { SummaryCard } from '../components/SummaryCard';
 import { RoomCodeDisplay } from '../components/RoomCodeDisplay';
 import { UsersIcon } from '../components/icons/UsersIcon';
+import { io, Socket } from 'socket.io-client';
 
 interface EchoWavePageProps {
   setAvgVolume: (volume: number) => void;
 }
+
+const SIGNALING_SERVER_URL = 'wss://echo-signal.fly.dev';
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const fakeSummary: Summary = {
     title: "A Spirited Conversation",
@@ -29,14 +32,30 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   const [convState, setConvState] = useState<ConversationState>(ConversationState.Idle);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [frequencyData, setFrequencyData] = useState(new Uint8Array(32));
+  const [peerCount, setPeerCount] = useState(0);
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
 
-  // Audio refs
+  // Refs
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameId = useRef<number>(0);
+  const socketRef = useRef<Socket | null>(null);
+  const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
   const isFriendsMode = !!roomCode;
+
+  const cleanupConnections = useCallback(() => {
+    console.log('Cleaning up connections');
+    if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+    }
+    peersRef.current.forEach(pc => pc.close());
+    peersRef.current.clear();
+    setRemoteStreams(new Map());
+    setPeerCount(0);
+  }, []);
 
   const cleanupAudio = useCallback(() => {
     if (animationFrameId.current) {
@@ -57,7 +76,6 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
     }
     setAvgVolume(0);
   }, [setAvgVolume]);
-
 
   const startTalking = async () => {
     if (convState !== ConversationState.Idle) return;
@@ -90,6 +108,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
       };
       renderFrame();
       
+      startSignaling();
       setConvState(ConversationState.Talking);
 
     } catch (err) {
@@ -100,19 +119,95 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
     }
   };
 
+  const startSignaling = () => {
+    socketRef.current = io(SIGNALING_SERVER_URL, { transports: ['websocket'] });
+
+    const handleTrackEvent = (event: RTCTrackEvent, peerSocketId: string) => {
+        console.log(`Received remote track from ${peerSocketId}`);
+        setRemoteStreams(prev => new Map(prev).set(peerSocketId, event.streams[0]));
+    };
+
+    const createPeerConnection = (peerSocketId: string): RTCPeerConnection => {
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        pc.onicecandidate = event => {
+            if (event.candidate && socketRef.current) {
+                socketRef.current.emit('ice_candidate', { target: peerSocketId, candidate: event.candidate });
+            }
+        };
+        pc.ontrack = event => handleTrackEvent(event, peerSocketId);
+
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => pc.addTrack(track, streamRef.current!));
+        }
+        peersRef.current.set(peerSocketId, pc);
+        return pc;
+    };
+
+    socketRef.current.on('connect', () => {
+        console.log('Connected to signaling server');
+        socketRef.current?.emit('join_room', roomCode || 'random');
+    });
+
+    socketRef.current.on('room_state', async (users: any) => {
+        console.log('Room state updated:', users);
+        const myId = socketRef.current!.id;
+        const otherUsers = users.filter(id => id !== myId);
+        setPeerCount(otherUsers.length);
+      
+        const currentPeers = Array.from(peersRef.current.keys());
+        const newUsers = otherUsers.filter(id => !currentPeers.includes(id));
+        const leftUsers = currentPeers.filter(id => !otherUsers.includes(id));
+        
+        for (const userId of newUsers) {
+            const pc = createPeerConnection(userId);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socketRef.current?.emit('offer', { target: userId, sdp: pc.localDescription });
+        }
+    
+        for (const userId of leftUsers) {
+            peersRef.current.get(userId)?.close();
+            peersRef.current.delete(userId);
+            setRemoteStreams(prev => {
+                const newMap = new Map(prev);
+                newMap.delete(userId);
+                return newMap;
+            });
+        }
+    });
+
+    socketRef.current.on('offer_received', async (data: { from: string, sdp: RTCSessionDescriptionInit }) => {
+        const pc = createPeerConnection(data.from);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socketRef.current?.emit('answer', { target: data.from, sdp: pc.localDescription });
+    });
+
+    socketRef.current.on('answer_received', async (data: { from: string, sdp: RTCSessionDescriptionInit }) => {
+        const pc = peersRef.current.get(data.from);
+        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    });
+
+    socketRef.current.on('ice_candidate_received', (data: { from: string, candidate: RTCIceCandidateInit }) => {
+        const pc = peersRef.current.get(data.from);
+        if (pc) pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    });
+  };
+
   const stopTalking = useCallback(() => {
     if (convState !== ConversationState.Talking) return;
     setConvState(ConversationState.Summarizing);
     
     cleanupAudio();
+    cleanupConnections();
     
-    // Use a timeout to simulate summary generation for a better UX
     setTimeout(() => {
         setSummary(fakeSummary);
         setConvState(ConversationState.Finished);
     }, 1500);
 
-  }, [convState, cleanupAudio]);
+  }, [convState, cleanupAudio, cleanupConnections]);
 
   const restart = () => {
     setConvState(ConversationState.Idle);
@@ -122,8 +217,9 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   useEffect(() => {
     return () => {
         cleanupAudio();
+        cleanupConnections();
     };
-  }, [cleanupAudio]);
+  }, [cleanupAudio, cleanupConnections]);
   
   const renderContent = () => {
     switch (convState) {
@@ -165,6 +261,16 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-4 relative">
+        <div className="hidden">
+            {Array.from(remoteStreams.values()).map((stream, index) => (
+                <audio key={index} ref={audioEl => {
+                    if (audioEl && audioEl.srcObject !== stream) {
+                        audioEl.srcObject = stream;
+                    }
+                }} autoPlay playsInline />
+            ))}
+        </div>
+
         <header className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center">
             <Link to="/" className="text-2xl font-black tracking-tighter" style={{ textShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
                 EchoWave
@@ -180,7 +286,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
         </header>
 
         <main className="flex flex-col items-center justify-center text-center gap-8 flex-grow">
-            {isFriendsMode && convState === ConversationState.Idle && roomCode && <RoomCodeDisplay roomCode={roomCode} />}
+            {isFriendsMode && convState !== ConversationState.Talking && roomCode && <RoomCodeDisplay roomCode={roomCode} peerCount={peerCount} />}
             {renderContent()}
         </main>
         

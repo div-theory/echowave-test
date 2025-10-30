@@ -1,13 +1,13 @@
-
 import React, { useState } from 'react';
 import { CopyIcon } from './icons/CopyIcon';
 import { ShareIcon } from './icons/ShareIcon';
 
 interface RoomCodeDisplayProps {
   roomCode: string;
+  peerCount: number;
 }
 
-export const RoomCodeDisplay: React.FC<RoomCodeDisplayProps> = ({ roomCode }) => {
+export const RoomCodeDisplay: React.FC<RoomCodeDisplayProps> = ({ roomCode, peerCount }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -43,9 +43,11 @@ export const RoomCodeDisplay: React.FC<RoomCodeDisplayProps> = ({ roomCode }) =>
         </button>
       </div>
        {copied && <div className="text-xs text-green-400">Copied!</div>}
-      <div className="text-sm bg-green-500/80 text-white font-bold rounded-full px-3 py-1">
-        1 friend connected
-      </div>
+       {peerCount > 0 && (
+          <div className="text-sm bg-green-500/80 text-white font-bold rounded-full px-3 py-1">
+            {peerCount} {peerCount === 1 ? 'friend' : 'friends'} connected
+          </div>
+       )}
     </div>
   );
 };
