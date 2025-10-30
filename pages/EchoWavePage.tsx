@@ -11,7 +11,7 @@ interface EchoWavePageProps {
   setAvgVolume: (volume: number) => void;
 }
 
-const SIGNALING_SERVER_URL = 'https://simple-webrtc-p2p-fly.fly.dev';
+const SIGNALING_SERVER_URL = 'https://webrtc-p2p.fly.dev';
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const fakeSummary: Summary = {
