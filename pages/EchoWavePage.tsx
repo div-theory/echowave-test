@@ -41,6 +41,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   const [frequencyData, setFrequencyData] = useState(new Uint8Array(32));
   const [peerCount, setPeerCount] = useState(0);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [socketError, setSocketError] = useState(false);
 
   // Refs
   const streamRef = useRef<MediaStream | null>(null);
@@ -85,9 +86,11 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   }, [setAvgVolume]);
 
   const startTalking = async () => {
-    if (convState !== ConversationState.Idle) return;
+    if (convState !== ConversationState.Idle && convState !== ConversationState.Finished) return;
+    
     setConvState(ConversationState.Connecting);
     setSummary(null);
+    setSocketError(false);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -116,10 +119,9 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
       renderFrame();
       
       startSignaling();
-      setConvState(ConversationState.Talking);
 
     } catch (err) {
-      console.error('Failed to get mic or connect:', err);
+      console.error('Failed to get mic:', err);
       alert('Could not access microphone. Please check permissions.');
       setConvState(ConversationState.Idle);
       cleanupAudio();
@@ -127,78 +129,120 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   };
 
   const startSignaling = () => {
-    socketRef.current = io(SIGNALING_SERVER_URL);
+    if (socketRef.current) {
+        socketRef.current.disconnect();
+    }
 
-    const handleTrackEvent = (event: RTCTrackEvent, peerSocketId: string) => {
-        console.log(`Received remote track from ${peerSocketId}`);
-        setRemoteStreams(prev => new Map(prev).set(peerSocketId, event.streams[0]));
-    };
+    const socket = io(SIGNALING_SERVER_URL);
+    socketRef.current = socket;
 
-    const createPeerConnection = (peerSocketId: string): RTCPeerConnection => {
+    const createPeerConnection = (peerSocketId: string, initiator: boolean = false): RTCPeerConnection => {
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        
         pc.onicecandidate = event => {
             if (event.candidate && socketRef.current) {
-                socketRef.current.emit('ice_candidate', { target: peerSocketId, candidate: event.candidate });
+                socketRef.current.emit('signal', { target: peerSocketId, data: { type: 'candidate', candidate: event.candidate } });
             }
         };
-        pc.ontrack = event => handleTrackEvent(event, peerSocketId);
+
+        pc.ontrack = event => {
+            console.log(`Received remote track from ${peerSocketId}`);
+            setRemoteStreams(prev => new Map(prev).set(peerSocketId, event.streams[0]));
+        };
 
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => pc.addTrack(track, streamRef.current!));
         }
+
         peersRef.current.set(peerSocketId, pc);
+        
+        if (initiator) {
+            pc.createOffer()
+              .then(offer => pc.setLocalDescription(offer))
+              .then(() => {
+                  socketRef.current?.emit('signal', { target: peerSocketId, data: { type: 'offer', sdp: pc.localDescription } });
+              })
+              .catch(e => console.error("Error creating offer", e));
+        }
+        
         return pc;
     };
 
-    socketRef.current.on('connect', () => {
+
+    socket.on('connect', () => {
         console.log('Connected to signaling server');
-        socketRef.current?.emit('join_room', roomCode || 'random');
-    });
-
-    socketRef.current.on('room_state', async (users: any) => {
-        console.log('Room state updated:', users);
-        const myId = socketRef.current!.id;
-        const otherUsers = users.filter((id: string) => id !== myId);
-        setPeerCount(otherUsers.length);
-      
-        const currentPeers = Array.from(peersRef.current.keys());
-        const newUsers = otherUsers.filter((id: string) => !currentPeers.includes(id));
-        const leftUsers = currentPeers.filter((id: string) => !otherUsers.includes(id));
+        setSocketError(false);
+        setConvState(ConversationState.Talking);
         
-        for (const userId of newUsers) {
-            const pc = createPeerConnection(userId);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socketRef.current?.emit('offer', { target: userId, sdp: pc.localDescription });
+        if (isFriendsMode) {
+            socket.emit('join-room', roomCode);
+        } else {
+            socket.emit('join-random');
         }
+    });
     
-        for (const userId of leftUsers) {
-            peersRef.current.get(userId)?.close();
-            peersRef.current.delete(userId);
-            setRemoteStreams(prev => {
-                const newMap = new Map(prev);
-                newMap.delete(userId);
-                return newMap;
-            });
+    socket.on('connect_error', (err: Error) => {
+        console.error('Signaling server connection error:', err);
+        setSocketError(true);
+        setConvState(ConversationState.Idle);
+        cleanupConnections();
+        cleanupAudio();
+    });
+
+    // --- RANDOM MODE ---
+    socket.on('matched', ({ partner, initiator }: { partner: string, initiator: boolean }) => {
+        console.log(`Matched with ${partner}. Initiator: ${initiator}`);
+        setPeerCount(1);
+        createPeerConnection(partner, initiator);
+    });
+
+    // --- FRIENDS MODE ---
+    socket.on('user-joined', ({ id, count }: { id: string, count: number }) => {
+        console.log(`User ${id} joined the room. Total: ${count}`);
+        setPeerCount(count - 1);
+        createPeerConnection(id, true);
+    });
+
+    socket.on('user-left', ({ id, count }: { id: string, count: number }) => {
+        console.log(`User ${id} left the room. Total: ${count}`);
+        setPeerCount(count > 0 ? count - 1 : 0);
+        if (peersRef.current.has(id)) {
+            peersRef.current.get(id)?.close();
+            peersRef.current.delete(id);
+        }
+        setRemoteStreams(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(id);
+            return newMap;
+        });
+        if (!isFriendsMode) {
+            stopTalking();
         }
     });
-
-    socketRef.current.on('offer_received', async (data: { from: string, sdp: RTCSessionDescriptionInit }) => {
-        const pc = createPeerConnection(data.from);
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socketRef.current?.emit('answer', { target: data.from, sdp: pc.localDescription });
+    
+    socket.on('room-error', (message: string) => {
+        console.error('Room error:', message);
+        alert(`Error: ${message}. Redirecting to home.`);
+        navigate('/');
     });
 
-    socketRef.current.on('answer_received', async (data: { from: string, sdp: RTCSessionDescriptionInit }) => {
-        const pc = peersRef.current.get(data.from);
-        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    });
+    // --- GENERIC WebRTC SIGNALING ---
+    socket.on('signal', async ({ sender, data }: { sender: string, data: any }) => {
+        let pc = peersRef.current.get(sender);
 
-    socketRef.current.on('ice_candidate_received', (data: { from: string, candidate: RTCIceCandidateInit }) => {
-        const pc = peersRef.current.get(data.from);
-        if (pc) pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        if (data.type === 'offer') {
+            if (!pc) {
+                pc = createPeerConnection(sender, false);
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('signal', { target: sender, data: { type: 'answer', sdp: pc.localDescription } });
+        } else if (data.type === 'answer') {
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        } else if (data.type === 'candidate') {
+            if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
     });
   };
 
@@ -219,16 +263,36 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   const restart = () => {
     setConvState(ConversationState.Idle);
     setSummary(null);
+    setSocketError(false);
   };
 
   useEffect(() => {
+    if (isFriendsMode && convState === ConversationState.Idle) {
+      startTalking();
+    }
     return () => {
         cleanupAudio();
         cleanupConnections();
     };
-  }, [cleanupAudio, cleanupConnections]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFriendsMode, roomCode]);
   
   const renderContent = () => {
+    if (socketError) {
+        return (
+            <div className="text-center bg-red-500/20 border border-red-500 p-6 rounded-lg">
+                <h3 className="text-xl font-bold mb-2">Connection Failed</h3>
+                <p className="text-red-200 mb-4">Could not connect to the signaling server.</p>
+                <button
+                    onClick={startTalking}
+                    className="bg-white text-slate-900 rounded-full px-6 py-2 font-bold shadow-lg hover:shadow-xl hover:scale-105 transform-gpu transition-all duration-300"
+                >
+                    Retry
+                </button>
+            </div>
+        )
+    }
+
     switch (convState) {
       case ConversationState.Idle:
       case ConversationState.Connecting:
@@ -269,17 +333,22 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
   return (
     <div className="w-full h-full flex flex-col items-center justify-center p-4 relative">
         <div className="hidden">
-            {Array.from(remoteStreams.values()).map((stream, index) => (
-                <audio key={index} ref={audioEl => {
-                    if (audioEl && audioEl.srcObject !== stream) {
-                        audioEl.srcObject = stream;
-                    }
-                }} autoPlay playsInline />
+            {Array.from(remoteStreams.entries()).map(([socketId, stream]) => (
+                <audio
+                    key={socketId}
+                    ref={audioEl => {
+                        if (audioEl && audioEl.srcObject !== stream) {
+                            audioEl.srcObject = stream;
+                        }
+                    }}
+                    autoPlay
+                    playsInline
+                />
             ))}
         </div>
 
         <header className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center">
-            <Link to="/" className="text-2xl font-black tracking-tighter" style={{ textShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
+            <Link to="/" onClick={restart} className="text-2xl font-black tracking-tighter" style={{ textShadow: '0 0 10px rgba(255,255,255,0.2)' }}>
                 EchoWave
             </Link>
             {!isFriendsMode ? (
@@ -293,7 +362,7 @@ export const EchoWavePage: React.FC<EchoWavePageProps> = ({ setAvgVolume }) => {
         </header>
 
         <main className="flex flex-col items-center justify-center text-center gap-8 flex-grow">
-            {isFriendsMode && convState !== ConversationState.Talking && roomCode && <RoomCodeDisplay roomCode={roomCode} peerCount={peerCount} />}
+            {isFriendsMode && convState !== ConversationState.Finished && roomCode && <RoomCodeDisplay roomCode={roomCode} peerCount={peerCount} />}
             {renderContent()}
         </main>
         

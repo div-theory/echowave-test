@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { EchoWavePage } from './pages/EchoWavePage';
-import { generateRoomCode } from './utils/helpers';
+import { CreateRoomRedirector } from './pages/CreateRoomRedirector';
 
 const App: React.FC = () => {
   const [avgVolume, setAvgVolume] = useState(0);
@@ -21,7 +21,7 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<EchoWavePage setAvgVolume={setAvgVolume} />} />
           <Route path="/join/:roomCode" element={<EchoWavePage setAvgVolume={setAvgVolume} />} />
-          <Route path="/new" element={<Navigate to={`/join/${generateRoomCode()}`} replace />} />
+          <Route path="/new" element={<CreateRoomRedirector />} />
         </Routes>
       </HashRouter>
     </div>
